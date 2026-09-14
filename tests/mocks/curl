@@ -1,0 +1,39 @@
+#!/bin/sh
+
+headers=''
+body=''
+data=''
+url=''
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -D|-o|-w|-c|-b|-H|--connect-timeout|--max-time)
+            option=$1; shift
+            case "$option" in -D) headers=$1 ;; -o) body=$1 ;; esac
+            ;;
+        --data) shift; data=$1 ;;
+        -*) ;;
+        *) url=$1 ;;
+    esac
+    shift
+done
+
+printf '%s | %s\n' "$url" "$data" >> "$MOCK_DIR/curl.log"
+[ -z "$headers" ] || : > "$headers"
+[ -z "$body" ] || printf '{}\n' > "$body"
+
+case "$MOCK_SCENARIO:$url:$data" in
+    api_error:*/auth:) printf '000'; exit 7 ;;
+    *:*/auth:)
+        if [ -n "$headers" ]; then
+            printf 'HTTP/1.1 401 Unauthorized\r\nX-NDM-Realm: Keenetic Test\r\nX-NDM-Challenge: challenge123\r\nSet-Cookie: sid=pending\r\n\r\n' > "$headers"
+        fi
+        printf '401'
+        ;;
+    *:*/auth:*) printf '200' ;;
+    *:*/rci/show/interface/Wireguard0:*)
+        [ -z "$body" ] || printf '{"id":"Wireguard0","type":"Wireguard"}\n' > "$body"
+        printf '200'
+        ;;
+    *:*/rci/interface/Wireguard0:*) printf '200' ;;
+    *) printf '404' ;;
+esac

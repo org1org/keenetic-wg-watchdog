@@ -1,0 +1,7 @@
+#!/bin/sh
+
+printf '%s\n' "${MOCK_RUNNING_CONFIG:-interface Wireguard0
+ description Central-WG
+ wireguard peer test-peer-public-key
+  endpoint 198.51.100.20:51820
+  allow-ips 172.16.6.2 255.255.255.255}"

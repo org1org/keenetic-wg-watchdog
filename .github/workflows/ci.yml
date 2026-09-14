@@ -10,11 +10,28 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shell: [dash, busybox]
     steps:
       - uses: actions/checkout@v4
-      - name: Run tests
-        run: python3 -m unittest discover -s tests -v
-      - name: Compile
-        run: python3 -m py_compile keenetic_wg_watchdog.py
-      - name: Check shell installer
-        run: sh -n install.sh
+      - name: Install test tools
+        run: sudo apt-get update && sudo apt-get install -y busybox-static shellcheck
+      - name: Syntax
+        run: |
+          if [ "${{ matrix.shell }}" = busybox ]; then
+            busybox sh -n keenetic-wg-watchdog.sh
+            busybox sh -n keenetic-wg-watchdog-manager.sh
+            busybox sh -n install.sh
+          else
+            dash -n keenetic-wg-watchdog.sh
+            dash -n keenetic-wg-watchdog-manager.sh
+            dash -n install.sh
+          fi
+      - name: Tests
+        env:
+          TEST_SHELL: ${{ matrix.shell }}
+        run: tests/run.sh
+      - name: ShellCheck
+        if: matrix.shell == 'dash'
+        run: shellcheck keenetic-wg-watchdog.sh keenetic-wg-watchdog-manager.sh install.sh tests/run.sh tests/mocks/*

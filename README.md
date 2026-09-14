@@ -10,120 +10,92 @@ __        __    ____    __  __
 
 ### Keenetic WG Watchdog
 
-Серверный менеджер автоматического восстановления WireGuard-туннелей на KeeneticOS.
+Удалённое восстановление WireGuard между роутерами Keenetic.
 
 ![version](https://img.shields.io/badge/version-0.1.0-blue)
-![python](https://img.shields.io/badge/python-3.9%2B-3776AB)
-![platform](https://img.shields.io/badge/platform-Linux-4EAA25)
+![shell](https://img.shields.io/badge/shell-POSIX%20sh-4EAA25)
+![platform](https://img.shields.io/badge/platform-KeeneticOS-009EE2)
+![environment](https://img.shields.io/badge/environment-Entware-555555)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![CI](https://github.com/org1org/keenetic-wg-watchdog/actions/workflows/ci.yml/badge.svg)](https://github.com/org1org/keenetic-wg-watchdog/actions/workflows/ci.yml)
 
 </div>
 
-## Для чего нужен
+## Схема работы
 
-Программа устанавливается на Linux-сервер WireGuard. Она проверяет выбранного
-пира и при длительной недоступности перезапускает соответствующий интерфейс на
-удалённом Keenetic через штатный HTTP RCI API.
+Программа ставится на центральный Keenetic с Entware, который принимает
+WireGuard-подключения. Удалённому Keenetic Entware не нужен.
 
-На самом Keenetic не нужны Entware, cron или дополнительные скрипты.
+Центральный роутер проверяет адрес выбранного пира внутри туннеля. После двух
+последовательных ошибок он подключается к HTTP RCI API удалённого Keenetic по
+независимому адресу и перезапускает там только указанный `WireguardN`.
 
-## Как работает
+## Важно
 
-1. В менеджере выбирается локальный WireGuard-интерфейс сервера.
-2. Затем выбирается пир. Адрес контроля определяется из его `AllowedIPs`, если
-   там есть одиночный адрес `/32` или `/128`.
-3. Указываются независимый адрес управления Keenetic и системное имя его
-   интерфейса, например `Wireguard0`.
-4. Раз в минуту сервер проверяет пир с привязкой ping к выбранному интерфейсу.
-5. После двух последовательных ошибок программа отправляет на Keenetic команды
-   `down`, ждёт 3 секунды и отправляет `up`.
-6. Через 15 секунд выполняется контрольная проверка. Повторный перезапуск
-   блокируется на 30 минут.
+Адрес управления удалённым Keenetic не должен проходить через контролируемый
+туннель. После команды `down` этот путь исчезнет и команда `up` не дойдёт.
 
-Программа не меняет ключи, пиры и постоянную конфигурацию WireGuard.
+Подойдёт прямой HTTPS-доступ через внешний адрес и отдельный порт, отдельная
+управляющая VPN или служебная сеть. Доступ следует ограничить IP-адресом
+центрального роутера. KeenDNS может не передавать необходимые заголовки
+`X-NDM-Realm` и `X-NDM-Challenge`; версия 0.1.0 рассчитана на прямой RCI-доступ.
 
-## Важное требование
+## Возможности
 
-Адрес HTTP API Keenetic **не должен маршрутизироваться через контролируемый
-WireGuard-интерфейс**. После команды `down` такой путь исчезнет и сервер не
-сможет отправить `up`.
-
-Используйте отдельный канал управления: публичный HTTPS-адрес с ограничением по
-IP сервера, отдельную управляющую VPN или локальную служебную сеть. Не открывайте
-HTTP-интерфейс Keenetic всему интернету.
+- интерфейс в стиле WG Watchdog Manager;
+- последовательный выбор локального WG-сервера и его пира;
+- определение адреса контроля из `allow-ips /32` или `/128`;
+- проверка авторизации и наличия удалённого интерфейса при настройке;
+- две ошибки до перезапуска, контроль восстановления и cooldown 30 минут;
+- три попытки вернуть удалённый интерфейс в `up`;
+- отдельные задания для разных интерфейсов и пиров;
+- пароли хранятся в конфигурациях с правами `600`;
+- работа через cron без Python, systemd и программ на удалённом Keenetic.
 
 ## Требования
 
-- Linux с systemd;
-- Python 3.9 или новее;
-- `wireguard-tools`, `iproute2` и `ping`;
-- права `root` для чтения WireGuard и установки службы;
-- доступ сервера к HTTP RCI API Keenetic независимо от проверяемого туннеля.
+- центральный Keenetic с установленным Entware;
+- KeeneticOS с WireGuard;
+- прямой доступ к RCI API удалённого Keenetic;
+- на удалённом Keenetic — отдельная учётная запись администратора.
 
-Сторонние Python-пакеты не требуются.
+Установщик проверяет и при необходимости добавляет `ndmq`, `curl` и `cron`.
 
 ## Установка
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/org1org/keenetic-wg-watchdog/main/install.sh | sudo sh
+wget -qO- https://raw.githubusercontent.com/org1org/keenetic-wg-watchdog/main/install.sh | sh
 ```
 
-После установки запустите менеджер:
+Затем:
 
 ```sh
-sudo kwg
+kwg
 ```
 
-Менеджер последовательно покажет WireGuard-интерфейсы и их пиры. Для настройки
-понадобятся:
+Менеджер сначала покажет локальные интерфейсы `WireguardN`, затем пиры выбранного
+интерфейса. Для задания нужно указать:
 
-- адрес пира внутри туннеля;
-- независимый URL управления Keenetic;
-- логин и пароль Keenetic;
-- системное имя интерфейса Keenetic (`Wireguard0`, `Wireguard1` и т. д.).
-
-При сохранении программа проверяет авторизацию, наличие интерфейса на Keenetic и,
-если возможно, маршрут до API.
+- туннельный адрес пира;
+- независимый URL управления удалённым Keenetic;
+- логин и пароль;
+- системное имя удалённого туннеля (`Wireguard0`, `Wireguard1` и т. д.).
 
 ## Управление
 
-```sh
-sudo kwg                         # интерактивный менеджер
-sudo keenetic-wg-watchdog --run  # проверить все задания
-sudo keenetic-wg-watchdog --job wg0-xxxxxxxxxxxx
-sudo keenetic-wg-watchdog --job wg0-xxxxxxxxxxxx --force-restart
-```
+В меню настроенного пира доступны проверка сейчас, принудительный перезапуск,
+изменение настроек, включение/выключение и удаление задания.
 
-Состояние таймера и журнал:
-
-```sh
-systemctl status keenetic-wg-watchdog.timer
-journalctl -u keenetic-wg-watchdog.service
-```
-
-Настройки хранятся в `/etc/keenetic-wg-watchdog.d` с правами доступа только для
-`root`. Временное состояние и cooldown находятся в `/run/keenetic-wg-watchdog`.
-
-## HTTP API Keenetic
-
-Используется штатная challenge-response авторизация KeeneticOS:
-
-1. `GET /auth` возвращает `X-NDM-Realm` и `X-NDM-Challenge`;
-2. программа вычисляет требуемые MD5/SHA-256 значения и создаёт сессию;
-3. `POST /rci/interface/WireguardN` с `{"down":true}` выключает интерфейс;
-4. запрос с `{"up":true}` включает его обратно.
-
-KeenDNS может проксировать авторизацию иначе и не всегда возвращает необходимые
-`X-NDM-*` заголовки. Версия 0.1.0 рассчитана на прямой доступ к RCI API.
+События записываются в системный журнал Keenetic с тегом
+`keenetic-wg-watchdog`.
 
 ## Удаление
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/org1org/keenetic-wg-watchdog/main/install.sh | sudo sh -s -- --uninstall
+wget -qO- https://raw.githubusercontent.com/org1org/keenetic-wg-watchdog/main/install.sh | sh -s -- --uninstall
 ```
 
-Настройки при удалении сохраняются.
+Настройки сохраняются в `/opt/etc/keenetic-wg-watchdog.d`.
 
 ## Лицензия
 

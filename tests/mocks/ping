@@ -1,0 +1,14 @@
+#!/bin/sh
+
+count_file="$MOCK_DIR/ping.count"
+count=$(cat "$count_file" 2>/dev/null || printf '0')
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+printf '%s | %s\n' "${MOCK_SCENARIO:-healthy}" "$*" >> "$MOCK_DIR/ping.log"
+
+case "${MOCK_SCENARIO:-healthy}" in
+    healthy) exit 0 ;;
+    down) exit 1 ;;
+    fail_then_recover) [ "$count" -ge 3 ] ;;
+    *) exit 1 ;;
+esac
