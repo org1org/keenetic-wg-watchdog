@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Compile
+        run: python3 -m py_compile keenetic_wg_watchdog.py
+      - name: Check shell installer
+        run: sh -n install.sh
