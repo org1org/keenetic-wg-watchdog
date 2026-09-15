@@ -150,4 +150,40 @@ assert_contains "$CASE_DIR/api-output" 'право HTTP Proxy' 'подсказк
 assert_not_contains "$MOCK_DIR/curl.log" '/auth' 'Digest challenge не должен переключаться на веб-сессию'
 pass 'ошибка облачной авторизации диагностируется без ложного fallback'
 
+new_case
+INSTALL_ROOT="$CASE_DIR/opt"
+mkdir -p "$INSTALL_ROOT/bin" "$INSTALL_ROOT/etc/init.d"
+cat > "$MOCK_BIN/opkg" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$MOCK_BIN/ndmc" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$MOCK_BIN/pidof" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+cat > "$MOCK_BIN/install" <<'EOF'
+#!/bin/sh
+printf 'устаревшая команда install вызвана\n' >&2
+exit 127
+EOF
+cat > "$INSTALL_ROOT/etc/init.d/S10cron" <<EOF
+#!/bin/sh
+printf '%s\\n' "\$1" >> "$CASE_DIR/cron-init.log"
+EOF
+chmod 755 "$MOCK_BIN/opkg" "$MOCK_BIN/ndmc" "$MOCK_BIN/pidof" \
+    "$MOCK_BIN/install" "$INSTALL_ROOT/etc/init.d/S10cron"
+PATH="$MOCK_BIN:$PATH" KEENETIC_WG_OPT_ROOT="$INSTALL_ROOT" \
+    KEENETIC_WG_OPKG="$MOCK_BIN/opkg" KEENETIC_WG_PIDOF="$MOCK_BIN/pidof" \
+    $TEST_SHELL "$REPO_DIR/install.sh" > "$CASE_DIR/install-output"
+[ -x "$INSTALL_ROOT/bin/keenetic-wg-watchdog" ] || fail 'worker не установлен'
+[ -x "$INSTALL_ROOT/bin/keenetic-wg-watchdog-manager" ] || fail 'manager не установлен'
+[ -L "$INSTALL_ROOT/bin/kwg" ] || fail 'ссылка kwg не создана'
+assert_contains "$INSTALL_ROOT/etc/crontab" 'keenetic-wg-watchdog --run' 'задание cron'
+assert_contains "$CASE_DIR/install-output" 'Готово' 'результат установки'
+pass 'установщик не зависит от отсутствующей в Entware команды install'
+
 printf '1..%s\n' "$PASS_COUNT"

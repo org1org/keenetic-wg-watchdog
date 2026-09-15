@@ -2,7 +2,7 @@
 
 set -eu
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 BASE_URL="${KEENETIC_WG_BASE_URL:-https://raw.githubusercontent.com/org1org/keenetic-wg-watchdog/main}"
 OPT_ROOT="${KEENETIC_WG_OPT_ROOT:-/opt}"
 BIN_DIR="$OPT_ROOT/bin"
@@ -84,9 +84,12 @@ if [ "$worker_version" != "$VERSION" ] || [ "$manager_version" != "$VERSION" ]; 
     die 'версии файлов не совпадают'
 fi
 
-install -d -m 700 "$CONFIG_DIR"
-install -m 755 "$tmp_dir/worker" "$BIN_DIR/keenetic-wg-watchdog"
-install -m 755 "$tmp_dir/manager" "$BIN_DIR/keenetic-wg-watchdog-manager"
+mkdir -p "$BIN_DIR" "$CONFIG_DIR" || die 'не удалось создать каталоги программы'
+chmod 700 "$CONFIG_DIR" || die 'не удалось настроить права каталога конфигурации'
+cp "$tmp_dir/worker" "$BIN_DIR/keenetic-wg-watchdog" || die 'не удалось установить worker'
+cp "$tmp_dir/manager" "$BIN_DIR/keenetic-wg-watchdog-manager" || die 'не удалось установить manager'
+chmod 755 "$BIN_DIR/keenetic-wg-watchdog" "$BIN_DIR/keenetic-wg-watchdog-manager" || \
+    die 'не удалось настроить права исполняемых файлов'
 ln -sf "$BIN_DIR/keenetic-wg-watchdog-manager" "$BIN_DIR/kwg"
 
 mkdir -p "$(dirname "$CRONTAB")"

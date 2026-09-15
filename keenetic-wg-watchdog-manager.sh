@@ -2,7 +2,7 @@
 
 # Interactive manager for Keenetic WG Watchdog.
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 OPT_ROOT="${KEENETIC_WG_OPT_ROOT:-/opt}"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-$OPT_ROOT/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"

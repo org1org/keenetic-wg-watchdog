@@ -2,7 +2,7 @@
 
 # Server-side peer watchdog for KeeneticOS + Entware.
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-/opt/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"
 RUN_DIR="${KEENETIC_WG_RUN_DIR:-/tmp/keenetic-wg-watchdog}"
