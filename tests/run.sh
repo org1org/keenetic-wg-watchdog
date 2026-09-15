@@ -29,6 +29,11 @@ assert_empty() {
     [ ! -s "$1" ] || fail "$2"
 }
 
+assert_not_contains() {
+    grep -F -- "$2" "$1" >/dev/null 2>&1 && fail "$3: найдено '$2'"
+    return 0
+}
+
 new_case() {
     CASE_DIR="$TEST_ROOT/case-$((PASS_COUNT + 1))"
     CONFIG_DIR="$CASE_DIR/config"
@@ -54,7 +59,7 @@ write_config() {
         printf 'LOCAL_INTERFACE=Wireguard0\n'
         printf 'PEER_PUBLIC_KEY_B64=%s\n' "$(printf 'test-peer-public-key' | base64 | tr -d '\n')"
         printf 'TARGET_IP=172.16.6.2\n'
-        printf 'ROUTER_URL_B64=%s\n' "$(printf 'https://198.51.100.20:8443' | base64 | tr -d '\n')"
+        printf 'ROUTER_URL_B64=%s\n' "$(printf 'http://rci.branch.keenetic.pro' | base64 | tr -d '\n')"
         printf 'ROUTER_USER_B64=%s\n' "$(printf 'watchdog' | base64 | tr -d '\n')"
         printf 'ROUTER_PASSWORD_B64=%s\n' "$(printf 'secret! password' | base64 | tr -d '\n')"
         printf 'REMOTE_INTERFACE=Wireguard0\n'
@@ -124,6 +129,25 @@ new_case
 write_config
 run_worker healthy 6000 --test-api Wireguard0-test > "$CASE_DIR/api-output"
 assert_contains "$CASE_DIR/api-output" 'интерфейс Wireguard0 найден' 'проверка API'
-pass 'проверка API и интерфейса работает'
+assert_contains "$CASE_DIR/api-output" 'облачный Digest' 'вывод режима авторизации'
+assert_contains "$MOCK_DIR/curl.log" 'auth=digest' 'облачная авторизация'
+assert_not_contains "$MOCK_DIR/curl.log" '/auth' 'облачный API не должен использовать веб-сессию'
+assert_not_contains "$MOCK_DIR/curl.log" 'secret! password' 'пароль не должен попадать в аргументы и журнал'
+pass 'облачная Digest-авторизация является основным режимом'
+
+new_case
+write_config
+run_worker direct_api 7000 --test-api Wireguard0-test > "$CASE_DIR/api-output"
+assert_contains "$CASE_DIR/api-output" 'интерфейс Wireguard0 найден' 'прямой API fallback'
+assert_contains "$CASE_DIR/api-output" 'прямой RCI' 'вывод fallback-режима'
+assert_contains "$MOCK_DIR/curl.log" '/auth' 'fallback на прямую авторизацию'
+pass 'прямая RCI-авторизация остаётся запасным режимом'
+
+new_case
+write_config
+run_worker cloud_auth_error 8000 --test-api Wireguard0-test > "$CASE_DIR/api-output" 2>&1 && fail 'ошибка облачной авторизации должна завершать проверку'
+assert_contains "$CASE_DIR/api-output" 'право HTTP Proxy' 'подсказка при ошибке облачной авторизации'
+assert_not_contains "$MOCK_DIR/curl.log" '/auth' 'Digest challenge не должен переключаться на веб-сессию'
+pass 'ошибка облачной авторизации диагностируется без ложного fallback'
 
 printf '1..%s\n' "$PASS_COUNT"

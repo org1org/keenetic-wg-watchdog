@@ -2,7 +2,7 @@
 
 # Interactive manager for Keenetic WG Watchdog.
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 OPT_ROOT="${KEENETIC_WG_OPT_ROOT:-/opt}"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-$OPT_ROOT/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"
@@ -275,7 +275,7 @@ configure_job() {
         current_remote=$(config_value "$existing" REMOTE_INTERFACE)
     fi
     header "$SELECTED_INTERFACE · peer $(printf '%.8s' "$PEER_KEY")…"
-    say 'Настройка удалённого Keenetic без Entware'
+    say 'Настройка удалённого Keenetic/Netcraze без Entware'
     say ''
     while :; do
         read_answer 'Адрес пира для контроля' "$current_target"
@@ -283,9 +283,9 @@ configure_job() {
         say 'Введите одиночный IPv4 или IPv6-адрес.'
     done
     while :; do
-        read_answer 'Независимый URL управления Keenetic' "$current_url"
+        read_answer 'Облачный RCI URL (домен 4-го уровня)' "$current_url"
         valid_url "$REPLY" && { ROUTER_URL=${REPLY%/}; break; }
-        say 'Пример: https://203.0.113.10:8443'
+        say 'Пример: http://rci.branch.keenetic.pro'
     done
     router_host=$(printf '%s' "$ROUTER_URL" | sed 's#^[a-z]*://##; s#[:/].*$##')
     if [ "$router_host" = "$TARGET_IP" ]; then
@@ -316,7 +316,7 @@ configure_job() {
     done
     write_config || { say 'ОШИБКА: не удалось сохранить настройки.'; pause; return 1; }
     say ''
-    say 'Проверяю авторизацию и интерфейс через HTTP API…'
+    say 'Проверяю облачную Digest-авторизацию и интерфейс…'
     if "$WORKER" --test-api "$JOB_ID" >&4 2>&4; then
         say ''
         say 'ГОТОВО: контроль пира включён.'

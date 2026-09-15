@@ -2,7 +2,7 @@
 
 # Server-side peer watchdog for KeeneticOS + Entware.
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-/opt/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"
 RUN_DIR="${KEENETIC_WG_RUN_DIR:-/tmp/keenetic-wg-watchdog}"
@@ -22,6 +22,7 @@ FORCE=no
 VERBOSE=no
 LOCK_HELD=no
 TMP_ROOT=""
+API_AUTH_MODE=""
 umask 077
 
 say() {
@@ -50,6 +51,7 @@ release_lock() {
 cleanup_api() {
     [ -z "$TMP_ROOT" ] || rm -rf "$TMP_ROOT"
     TMP_ROOT=""
+    API_AUTH_MODE=""
 }
 
 is_uint() {
@@ -210,25 +212,61 @@ check_api_body() {
     return 0
 }
 
-api_authenticate() {
+curl_config_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+prepare_api() {
     cleanup_api
     TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/keenetic-wg-api.XXXXXX") || return 1
     COOKIE_FILE="$TMP_ROOT/cookies"
     HEADERS_FILE="$TMP_ROOT/headers"
     BODY_FILE="$TMP_ROOT/body"
+    DIGEST_CONFIG="$TMP_ROOT/digest.conf"
     : > "$COOKIE_FILE"
+    {
+        printf 'digest\n'
+        printf 'user = "%s"\n' "$(curl_config_escape "$ROUTER_USER:$ROUTER_PASSWORD")"
+    } > "$DIGEST_CONFIG"
+    chmod 600 "$DIGEST_CONFIG"
+}
+
+api_authenticate() {
+    prepare_api || { API_ERROR="не удалось подготовить HTTP-клиент"; return 1; }
+
+    # Cloud-first: KeenDNS/CrazeDNS HTTP Proxy exposes RCI with HTTP Digest.
+    http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 20 \
+        --config "$DIGEST_CONFIG" -D "$HEADERS_FILE" -o "$BODY_FILE" \
+        -w '%{http_code}' \
+        "$ROUTER_URL/rci/show/interface/$REMOTE_INTERFACE" 2>/dev/null) || http_code=000
+    if [ "$http_code" = 200 ]; then
+        API_AUTH_MODE=digest
+        return 0
+    fi
+    digest_challenge=$(header_value WWW-Authenticate)
+    case "$digest_challenge" in
+        Digest*|digest*)
+            API_ERROR="облачная авторизация отклонена (HTTP $http_code); проверьте пароль и право HTTP Proxy"
+            return 1
+            ;;
+    esac
+
+    # Compatibility fallback for a direct connection to the router web API.
     http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
         -c "$COOKIE_FILE" -b "$COOKIE_FILE" -D "$HEADERS_FILE" -o "$BODY_FILE" \
         -w '%{http_code}' "$ROUTER_URL/auth" 2>/dev/null) || {
         API_ERROR="адрес управления недоступен"
         return 1
     }
-    if [ "$http_code" = 200 ]; then return 0; fi
+    if [ "$http_code" = 200 ]; then
+        API_AUTH_MODE=session
+        return 0
+    fi
     [ "$http_code" = 401 ] || { API_ERROR="GET /auth: HTTP $http_code"; return 1; }
     realm=$(header_value X-NDM-Realm)
     challenge=$(header_value X-NDM-Challenge)
     if [ -z "$realm" ] || [ -z "$challenge" ]; then
-        API_ERROR="нет X-NDM-Realm/X-NDM-Challenge; нужен прямой доступ к RCI"
+        API_ERROR="не найдена поддерживаемая схема авторизации; проверьте облачный RCI-домен"
         return 1
     fi
     first=$(printf '%s' "$ROUTER_USER:$realm:$ROUTER_PASSWORD" | "$MD5_BIN" | awk '{print $1}') || return 1
@@ -242,17 +280,20 @@ api_authenticate() {
         return 1
     }
     [ "$http_code" = 200 ] || { API_ERROR="неверный логин или пароль (HTTP $http_code)"; return 1; }
+    API_AUTH_MODE=session
 }
 
 api_get_interface() {
     api_authenticate || return 1
-    http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
-        -c "$COOKIE_FILE" -b "$COOKIE_FILE" -o "$BODY_FILE" -w '%{http_code}' \
-        "$ROUTER_URL/rci/show/interface/$REMOTE_INTERFACE" 2>/dev/null) || {
-        API_ERROR="не удалось прочитать интерфейс"
-        return 1
-    }
-    [ "$http_code" = 200 ] || { API_ERROR="проверка интерфейса: HTTP $http_code"; return 1; }
+    if [ "$API_AUTH_MODE" = session ]; then
+        http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
+            -c "$COOKIE_FILE" -b "$COOKIE_FILE" -o "$BODY_FILE" -w '%{http_code}' \
+            "$ROUTER_URL/rci/show/interface/$REMOTE_INTERFACE" 2>/dev/null) || {
+            API_ERROR="не удалось прочитать интерфейс"
+            return 1
+        }
+        [ "$http_code" = 200 ] || { API_ERROR="проверка интерфейса: HTTP $http_code"; return 1; }
+    fi
     check_api_body || return 1
     grep -Eq 'Wireguard|wireguard|"id"|"interface-name"' "$BODY_FILE" || {
         API_ERROR="интерфейс $REMOTE_INTERFACE не найден"
@@ -262,13 +303,21 @@ api_get_interface() {
 
 api_post_interface() {
     payload=$1
-    http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
-        -c "$COOKIE_FILE" -b "$COOKIE_FILE" -o "$BODY_FILE" -w '%{http_code}' \
-        -H 'Content-Type: application/json' --data "$payload" \
-        "$ROUTER_URL/rci/interface/$REMOTE_INTERFACE" 2>/dev/null) || {
+    if [ "$API_AUTH_MODE" = digest ]; then
+        http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 20 \
+            --config "$DIGEST_CONFIG" -o "$BODY_FILE" -w '%{http_code}' \
+            -H 'Content-Type: application/json' --data "$payload" \
+            "$ROUTER_URL/rci/interface/$REMOTE_INTERFACE" 2>/dev/null) || http_code=000
+    else
+        http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
+            -c "$COOKIE_FILE" -b "$COOKIE_FILE" -o "$BODY_FILE" -w '%{http_code}' \
+            -H 'Content-Type: application/json' --data "$payload" \
+            "$ROUTER_URL/rci/interface/$REMOTE_INTERFACE" 2>/dev/null) || http_code=000
+    fi
+    if [ "$http_code" = 000 ]; then
         API_ERROR="не удалось отправить команду"
         return 1
-    }
+    fi
     [ "$http_code" = 200 ] || { API_ERROR="команда интерфейсу: HTTP $http_code"; return 1; }
     check_api_body
 }
@@ -404,7 +453,13 @@ case "${1:-}" in
         valid_job_id "$REQUESTED_JOB" || exit 2
         load_config "$CONFIG_DIR/$REQUESTED_JOB.conf" || exit 1
         if api_get_interface; then
-            printf 'OK: %s доступен, интерфейс %s найден.\n' "$ROUTER_URL" "$REMOTE_INTERFACE"
+            case "$API_AUTH_MODE" in
+                digest) auth_label='облачный Digest' ;;
+                session) auth_label='прямой RCI' ;;
+                *) auth_label='HTTP API' ;;
+            esac
+            printf 'OK: %s доступен, интерфейс %s найден (%s).\n' \
+                "$ROUTER_URL" "$REMOTE_INTERFACE" "$auth_label"
         else
             printf 'Ошибка: %s\n' "$API_ERROR" >&2
             exit 1

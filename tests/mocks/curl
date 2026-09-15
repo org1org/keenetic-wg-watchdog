@@ -4,12 +4,14 @@ headers=''
 body=''
 data=''
 url=''
+auth_mode=session
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -D|-o|-w|-c|-b|-H|--connect-timeout|--max-time)
             option=$1; shift
             case "$option" in -D) headers=$1 ;; -o) body=$1 ;; esac
             ;;
+        --config) shift; auth_mode=digest ;;
         --data) shift; data=$1 ;;
         -*) ;;
         *) url=$1 ;;
@@ -17,23 +19,47 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-printf '%s | %s\n' "$url" "$data" >> "$MOCK_DIR/curl.log"
+printf '%s | %s | auth=%s\n' "$url" "$data" "$auth_mode" >> "$MOCK_DIR/curl.log"
 [ -z "$headers" ] || : > "$headers"
 [ -z "$body" ] || printf '{}\n' > "$body"
 
-case "$MOCK_SCENARIO:$url:$data" in
-    api_error:*/auth:) printf '000'; exit 7 ;;
-    *:*/auth:)
+case "$MOCK_SCENARIO:$auth_mode:$url:$data" in
+    cloud_auth_error:digest:*/rci/show/interface/Wireguard0:*)
+        [ -z "$headers" ] || printf 'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm="Keenetic"\r\n\r\n' > "$headers"
+        printf '401'
+        ;;
+    direct_api:digest:*/rci/show/interface/Wireguard0:*)
+        [ -z "$headers" ] || printf 'HTTP/1.1 401 Unauthorized\r\nX-NDM-Realm: Keenetic Test\r\nX-NDM-Challenge: challenge123\r\n\r\n' > "$headers"
+        printf '401'
+        ;;
+    direct_api:session:*/auth:)
         if [ -n "$headers" ]; then
             printf 'HTTP/1.1 401 Unauthorized\r\nX-NDM-Realm: Keenetic Test\r\nX-NDM-Challenge: challenge123\r\nSet-Cookie: sid=pending\r\n\r\n' > "$headers"
         fi
         printf '401'
         ;;
-    *:*/auth:*) printf '200' ;;
-    *:*/rci/show/interface/Wireguard0:*)
+    direct_api:session:*/auth:*) printf '200' ;;
+    direct_api:session:*/rci/show/interface/Wireguard0:*)
         [ -z "$body" ] || printf '{"id":"Wireguard0","type":"Wireguard"}\n' > "$body"
         printf '200'
         ;;
-    *:*/rci/interface/Wireguard0:*) printf '200' ;;
+    *:digest:*/rci/show/interface/Wireguard0:*)
+        [ -z "$body" ] || printf '{"id":"Wireguard0","type":"Wireguard"}\n' > "$body"
+        printf '200'
+        ;;
+    *:digest:*/rci/interface/Wireguard0:*) printf '200' ;;
+    api_error:session:*/auth:) printf '000'; exit 7 ;;
+    *:session:*/auth:)
+        if [ -n "$headers" ]; then
+            printf 'HTTP/1.1 401 Unauthorized\r\nX-NDM-Realm: Keenetic Test\r\nX-NDM-Challenge: challenge123\r\nSet-Cookie: sid=pending\r\n\r\n' > "$headers"
+        fi
+        printf '401'
+        ;;
+    *:session:*/auth:*) printf '200' ;;
+    *:session:*/rci/show/interface/Wireguard0:*)
+        [ -z "$body" ] || printf '{"id":"Wireguard0","type":"Wireguard"}\n' > "$body"
+        printf '200'
+        ;;
+    *:session:*/rci/interface/Wireguard0:*) printf '200' ;;
     *) printf '404' ;;
 esac
