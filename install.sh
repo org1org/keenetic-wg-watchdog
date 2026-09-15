@@ -11,13 +11,14 @@ CRONTAB="$OPT_ROOT/etc/crontab"
 CRON_INIT="$OPT_ROOT/etc/init.d/S10cron"
 OPKG_BIN="${KEENETIC_WG_OPKG:-opkg}"
 PIDOF_BIN="${KEENETIC_WG_PIDOF:-pidof}"
+ID_BIN="${KEENETIC_WG_ID:-id}"
 BEGIN_MARKER='# BEGIN KEENETIC-WG-WATCHDOG — managed automatically'
 END_MARKER='# END KEENETIC-WG-WATCHDOG'
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || die 'запустите установщик с правами root'
+[ "$("$ID_BIN" -u)" -eq 0 ] || die 'запустите установщик с правами root'
 command -v "$OPKG_BIN" >/dev/null 2>&1 || die 'Entware не найден или не запущен'
 
 remove_cron_block() {

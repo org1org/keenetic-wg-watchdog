@@ -183,6 +183,7 @@ chmod 755 "$MOCK_BIN/opkg" "$MOCK_BIN/ndmc" "$MOCK_BIN/pidof" \
     "$MOCK_BIN/install" "$MOCK_BIN/id" "$INSTALL_ROOT/etc/init.d/S10cron"
 PATH="$MOCK_BIN:$PATH" KEENETIC_WG_OPT_ROOT="$INSTALL_ROOT" \
     KEENETIC_WG_OPKG="$MOCK_BIN/opkg" KEENETIC_WG_PIDOF="$MOCK_BIN/pidof" \
+    KEENETIC_WG_ID="$MOCK_BIN/id" \
     $TEST_SHELL "$REPO_DIR/install.sh" > "$CASE_DIR/install-output"
 [ -x "$INSTALL_ROOT/bin/keenetic-wg-watchdog" ] || fail 'worker не установлен'
 [ -x "$INSTALL_ROOT/bin/keenetic-wg-watchdog-manager" ] || fail 'manager не установлен'
