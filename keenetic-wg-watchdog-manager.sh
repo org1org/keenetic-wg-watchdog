@@ -458,10 +458,10 @@ main() {
 }
 
 list_peers() {
-    [ "$#" -eq 1 ] && valid_interface "$1" || {
+    if [ "$#" -ne 1 ] || ! valid_interface "$1"; then
         printf 'Использование: %s --list-peers WireguardN\n' "$0" >&2
         return 2
-    }
+    fi
     detect_interfaces
     detect_peers "$1"
     printf '%s\n' "$PEER_LIST" | awk 'NF'
