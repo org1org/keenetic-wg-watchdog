@@ -265,4 +265,53 @@ assert_contains "$INSTALL_ROOT/etc/crontab" 'keenetic-wg-watchdog --run' 'зад
 assert_contains "$CASE_DIR/install-output" 'Готово' 'результат установки'
 pass 'установщик не зависит от отсутствующей в Entware команды install'
 
+for scenario in dns_error tls_error; do
+    new_case
+    write_config
+    run_worker "$scenario" 9000 --test-api Wireguard0-test > "$CASE_DIR/output" 2>&1 && fail 'сбой сети должен завершать проверку'
+    assert_contains "$CASE_DIR/output" 'curl' 'код сетевой ошибки'
+    [ "$(wc -l < "$MOCK_DIR/curl.log")" -eq 1 ] || fail 'лишний запрос после сетевой ошибки'
+    pass "$scenario: причина сохранена, fallback не выполняется"
+done
+
+new_case
+write_config
+run_worker down_timeout 9100 --job Wireguard0-test --force > "$CASE_DIR/output" 2>&1 && fail 'таймаут down должен завершить проверку'
+assert_contains "$MOCK_DIR/curl.log" '{"up":true}' 'восстановление после неопределённого результата down'
+pass 'после таймаута down выполняется восстановление up'
+
+for value in 999.1.1.1 deadbeef 1:2:3 1:::2; do
+    new_case
+    write_config
+    sed -i "s/^TARGET_IP=.*/TARGET_IP=$value/" "$CONFIG_DIR/Wireguard0-test.conf"
+    run_worker healthy 9200 --job Wireguard0-test --check >/dev/null 2>&1 && fail 'некорректный IP принят'
+    assert_empty "$MOCK_DIR/ping.log" 'некорректный IP не должен запускать ping'
+    pass "отклонён некорректный адрес $value"
+done
+
+new_case
+write_config
+mkdir "$RUN_DIR/Wireguard0-test.lock"
+run_worker healthy 9300 --job Wireguard0-test --check >/dev/null
+assert_empty "$MOCK_DIR/ping.log" 'нельзя захватывать только что созданную блокировку'
+pass 'блокировка без записанного PID не перехватывается'
+
+new_case
+write_config no
+sed -i 's/^PING_COUNT=3$/PING_COUNT=5/' "$CONFIG_DIR/Wireguard0-test.conf"
+# Load manager functions without starting its interactive entry point.
+sed '/^case "${1:-}" in/,$d' "$MANAGER" > "$CASE_DIR/functions.sh"
+cat > "$CASE_DIR/edit.sh" <<'EOF'
+. "$1"
+JOB_ID=Wireguard0-test SELECTED_INTERFACE=Wireguard0 PEER_KEY=test-peer-public-key
+TARGET_IP=172.16.6.3 ROUTER_URL=http://rci.branch.keenetic.pro
+ROUTER_USER=watchdog ROUTER_PASSWORD=secret REMOTE_INTERFACE=Wireguard0
+write_config
+EOF
+KEENETIC_WG_CONFIG_DIR="$CONFIG_DIR" $TEST_SHELL "$CASE_DIR/edit.sh" "$CASE_DIR/functions.sh"
+assert_contains "$CONFIG_DIR/Wireguard0-test.conf" 'PING_COUNT=5' 'сохранён параметр ping'
+assert_contains "$CONFIG_DIR/Wireguard0-test.conf" 'ENABLED=no' 'сохранено выключенное состояние'
+assert_contains "$CONFIG_DIR/Wireguard0-test.conf" 'TARGET_IP=172.16.6.3' 'обновлён адрес контроля'
+pass 'редактирование сохраняет параметры и выключенное состояние'
+
 printf '1..%s\n' "$PASS_COUNT"

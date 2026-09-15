@@ -23,7 +23,12 @@ printf '%s | %s | auth=%s\n' "$url" "$data" "$auth_mode" >> "$MOCK_DIR/curl.log"
 [ -z "$headers" ] || : > "$headers"
 [ -z "$body" ] || printf '{}\n' > "$body"
 
+case "$MOCK_SCENARIO" in
+    dns_error) printf '000'; exit 6 ;;
+    tls_error) printf '000'; exit 60 ;;
+esac
 case "$MOCK_SCENARIO:$auth_mode:$url:$data" in
+    down_timeout:*:*/rci/interface/Wireguard0:*down*) printf '000'; exit 28 ;;
     cloud_auth_error:digest:*/rci/show/interface/Wireguard0:*)
         [ -z "$headers" ] || printf 'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm="Keenetic"\r\n\r\n' > "$headers"
         printf '401'

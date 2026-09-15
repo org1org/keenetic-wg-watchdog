@@ -2,7 +2,7 @@
 
 # Interactive manager for Keenetic WG Watchdog.
 
-VERSION="0.2.2"
+VERSION="0.2.3"
 OPT_ROOT="${KEENETIC_WG_OPT_ROOT:-/opt}"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-$OPT_ROOT/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"
@@ -19,17 +19,21 @@ TMP_FILES=""
 umask 077
 
 cleanup() {
-    printf '%s' "$TMP_FILES" | while IFS= read -r file; do
+    [ "${PASSWORD_HIDDEN:-no}" != yes ] || stty echo <&3 2>/dev/null || true
+    printf '%s\n' "$TMP_FILES" | while IFS= read -r file; do
         [ -n "$file" ] && rm -f "$file"
     done
     [ "$UI_ACTIVE" = yes ] && printf '\033[0m\033[?7h\033[?25h\033[?1049l' >&4
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 open_console() {
     exec 3< "$TTY" || { printf 'Ошибка: нет терминала.\n' >&2; exit 1; }
     exec 4> "$TTY" || exit 1
-    if [ -t 3 ] && [ -t 4 ] && [ "${TERM:-dumb}" != dumb ]; then
+    if [ "${PLAIN:-no}" != yes ] && [ -t 3 ] && [ -t 4 ] && [ "${TERM:-dumb}" != dumb ]; then
         UI_ACTIVE=yes
         printf '\033[?1049h\033[?7l\033[2J\033[H' >&4
     fi
@@ -72,9 +76,11 @@ read_answer() {
 
 read_password() {
     printf '%s: ' "$1" >&4
+    PASSWORD_HIDDEN=yes
     stty -echo <&3 2>/dev/null || true
     IFS= read -r REPLY <&3 || REPLY=""
     stty echo <&3 2>/dev/null || true
+    PASSWORD_HIDDEN=no
     printf '\n' >&4
 }
 
@@ -84,7 +90,8 @@ confirm() {
 }
 
 is_uint() {
-    case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac
+    case "$1" in ''|*[!0-9]*|0[0-9]*) return 1 ;; esac
+    [ "${#1}" -le 9 ]
 }
 
 valid_interface() {
@@ -92,12 +99,32 @@ valid_interface() {
 }
 
 valid_target() {
-    case "$1" in ''|-*|*[!0-9A-Fa-f.:]*) return 1 ;; *[0-9A-Fa-f]*) return 0 ;; *) return 1 ;; esac
+    case "$1" in ''|-*|*[!0-9A-Fa-f.:]*) return 1 ;; esac
+    printf '%s\n' "$1" | awk '
+        /:/ {
+            if ($0 ~ /\./ || $0 ~ /:::/) exit 1
+            text=$0; compressed=gsub(/::/, ":", text)
+            if (compressed>1 || (!compressed && ($0 ~ /^:/ || $0 ~ /:$/))) exit 1
+            n=split($0, parts, ":"); groups=0
+            for(i=1;i<=n;i++) if(parts[i]!="") {
+                if(length(parts[i])>4) exit 1
+                groups++
+            }
+            exit !((compressed && groups<8) || (!compressed && groups==8))
+        }
+        {
+            n=split($0, parts, "."); if(n!=4) exit 1
+            for(i=1;i<=4;i++) if(parts[i]!~/^[0-9]+$/ || length(parts[i])>3 || parts[i]+0>255) exit 1
+        }
+    '
+
 }
 
 valid_url() {
     case "$1" in http://*|https://*) ;; *) return 1 ;; esac
     case "$1" in *[!0-9A-Za-z._:/-]*) return 1 ;; esac
+    url_host=${1#*://}
+    case "$url_host" in ''|/*|:*|*/*) return 1 ;; esac
     return 0
 }
 
@@ -294,6 +321,7 @@ decode_config_value() {
 }
 
 state_result_text() {
+    [ -f "$STATE_DIR/$JOB_ID.state" ] || { printf 'ещё не проверялось'; return; }
     result=$(config_value "$STATE_DIR/$JOB_ID.state" LAST_RESULT)
     case "$result" in
         healthy) printf 'туннель работает' ;;
@@ -322,9 +350,14 @@ write_config() {
         printf 'ROUTER_USER_B64=%s\n' "$(encode "$ROUTER_USER")"
         printf 'ROUTER_PASSWORD_B64=%s\n' "$(encode "$ROUTER_PASSWORD")"
         printf 'REMOTE_INTERFACE=%s\n' "$REMOTE_INTERFACE"
-        printf 'PING_COUNT=3\nPING_TIMEOUT=3\nFAILURE_THRESHOLD=2\n'
-        printf 'RESTART_DELAY=3\nRECOVERY_CHECK_DELAY=15\nRESTART_COOLDOWN=1800\n'
-        printf 'ENABLED=yes\n'
+        for entry in PING_COUNT:3 PING_TIMEOUT:3 FAILURE_THRESHOLD:2 RESTART_DELAY:3 RECOVERY_CHECK_DELAY:15 RESTART_COOLDOWN:1800 ENABLED:yes; do
+            setting=${entry%%:*}; value=${entry#*:}
+            if [ -f "$path" ]; then
+                saved=$(config_value "$path" "$setting")
+                [ -z "$saved" ] || value=$saved
+            fi
+            printf '%s=%s\n' "$setting" "$value"
+        done
     } > "$tmp"
     chmod 600 "$tmp"
     mv -f "$tmp" "$path"
@@ -332,7 +365,7 @@ write_config() {
 
 configure_job() {
     existing="$CONFIG_DIR/$JOB_ID.conf"
-    current_target=$PEER_TARGET current_url='' current_user=admin current_remote=Wireguard0 current_password=''
+    current_target=$PEER_TARGET current_url='' current_user=wgwatchdog current_remote=Wireguard0 current_password=''
     if [ -f "$existing" ]; then
         current_target=$(config_value "$existing" TARGET_IP)
         current_url=$(decode_config_value "$existing" ROUTER_URL_B64)
@@ -350,6 +383,8 @@ configure_job() {
     done
     while :; do
         read_answer 'Облачный RCI URL (домен 4-го уровня)' "$current_url"
+        case "$REPLY" in *://*|'') ;; *) REPLY="http://$REPLY" ;; esac
+        REPLY=${REPLY%/}
         valid_url "$REPLY" && { ROUTER_URL=${REPLY%/}; break; }
         say 'Пример: http://rci.branch.keenetic.pro'
     done
@@ -385,7 +420,7 @@ configure_job() {
     say 'Проверяю облачную Digest-авторизацию и интерфейс…'
     if "$WORKER" --test-api "$JOB_ID" >&4 2>&4; then
         say ''
-        say 'ГОТОВО: контроль пира включён.'
+        say 'ГОТОВО: доступ проверен, настройки сохранены.'
     else
         say ''
         say 'ВНИМАНИЕ: настройки сохранены, но проверка API не прошла.'
@@ -482,6 +517,7 @@ list_peers() {
 case "${1:-}" in
     --version) printf '%s\n' "$VERSION" ;;
     --list-peers) shift; list_peers "$@" ;;
-    ''|--plain) main ;;
+    --plain) PLAIN=yes; main ;;
+    '') main ;;
     *) printf 'Использование: %s [--plain|--version|--list-peers WireguardN]\n' "$0" >&2; exit 2 ;;
 esac

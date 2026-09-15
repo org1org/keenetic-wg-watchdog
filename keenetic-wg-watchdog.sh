@@ -2,7 +2,7 @@
 
 # Server-side peer watchdog for KeeneticOS + Entware.
 
-VERSION="0.2.2"
+VERSION="0.2.3"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-/opt/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"
 RUN_DIR="${KEENETIC_WG_RUN_DIR:-/tmp/keenetic-wg-watchdog}"
@@ -36,10 +36,17 @@ log_message() {
 }
 
 cleanup() {
+    if [ "${NEEDS_UP:-no}" = yes ]; then
+        api_post_interface '{"up":true}' || log_message "[$JOB_ID] аварийное восстановление up не удалось: $API_ERROR"
+    fi
+    NEEDS_UP=no
     cleanup_api
     release_lock
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 release_lock() {
     [ "$LOCK_HELD" = yes ] || return 0
@@ -72,7 +79,25 @@ valid_remote_interface() {
 }
 
 valid_target() {
-    case "$1" in ''|-*|*[!0-9A-Fa-f.:]*) return 1 ;; *[0-9A-Fa-f]*) return 0 ;; *) return 1 ;; esac
+    case "$1" in ''|-*|*[!0-9A-Fa-f.:]*) return 1 ;; esac
+    printf '%s\n' "$1" | awk '
+        /:/ {
+            if ($0 ~ /\./ || $0 ~ /:::/) exit 1
+            text=$0; compressed=gsub(/::/, ":", text)
+            if (compressed>1 || (!compressed && ($0 ~ /^:/ || $0 ~ /:$/))) exit 1
+            n=split($0, parts, ":"); groups=0
+            for(i=1;i<=n;i++) if(parts[i]!="") {
+                if(length(parts[i])>4) exit 1
+                groups++
+            }
+            exit !((compressed && groups<8) || (!compressed && groups==8))
+        }
+        {
+            n=split($0, parts, "."); if(n!=4) exit 1
+            for(i=1;i<=4;i++) if(parts[i]!~/^[0-9]+$/ || length(parts[i])>3 || parts[i]+0>255) exit 1
+        }
+    '
+
 }
 
 b64decode() {
@@ -132,10 +157,19 @@ load_config() {
     ROUTER_USER=$(b64decode "$ROUTER_USER_B64") || return 1
     ROUTER_PASSWORD=$(b64decode "$ROUTER_PASSWORD_B64") || return 1
     [ -n "$PEER_PUBLIC_KEY" ] && [ -n "$ROUTER_PASSWORD" ] || return 1
+    case "$ROUTER_PASSWORD" in *"$(printf '\r')"*|*'
+'*) return 1 ;; esac
     case "$ROUTER_URL" in http://*|https://*) ;; *) return 1 ;; esac
     case "$ROUTER_URL" in *[!0-9A-Za-z._:/-]*) return 1 ;; esac
     case "$ROUTER_USER" in ''|*[!0-9A-Za-z_.@-]*) return 1 ;; esac
+    [ "$PING_COUNT" -ge 1 ] && [ "$PING_COUNT" -le 20 ] || return 1
+    [ "$PING_TIMEOUT" -ge 1 ] && [ "$PING_TIMEOUT" -le 60 ] || return 1
+    [ "$FAILURE_THRESHOLD" -ge 1 ] && [ "$FAILURE_THRESHOLD" -le 1000 ] || return 1
+    [ "$RESTART_DELAY" -le 60 ] && [ "$RECOVERY_CHECK_DELAY" -le 300 ] || return 1
+    [ "$RESTART_COOLDOWN" -le 604800 ] || return 1
     ROUTER_URL=${ROUTER_URL%/}
+    host=${ROUTER_URL#*://}
+    case "$host" in ''|/*|:*|*/*) return 1 ;; esac
 }
 
 reset_state() {
@@ -225,6 +259,17 @@ check_api_body() {
     return 0
 }
 
+transport_error() {
+    case "$1" in
+        5|6) API_ERROR="ошибка DNS: не удалось разрешить имя в $ROUTER_URL (curl $1)" ;;
+        7) API_ERROR="не удалось подключиться к $ROUTER_URL (curl 7)" ;;
+        28) API_ERROR="истекло время ожидания $ROUTER_URL (curl 28)" ;;
+        35|51|60) API_ERROR="ошибка TLS/сертификата $ROUTER_URL (curl $1)" ;;
+        *) API_ERROR="ошибка HTTP-клиента при обращении к $ROUTER_URL (curl $1)" ;;
+    esac
+    return 1
+}
+
 curl_config_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -251,7 +296,7 @@ api_authenticate() {
     http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 20 \
         --config "$DIGEST_CONFIG" -D "$HEADERS_FILE" -o "$BODY_FILE" \
         -w '%{http_code}' \
-        "$ROUTER_URL/rci/show/interface/$REMOTE_INTERFACE" 2>/dev/null) || http_code=000
+        "$ROUTER_URL/rci/show/interface/$REMOTE_INTERFACE" 2>/dev/null) || { transport_error "$?"; return 1; }
     if [ "$http_code" = 200 ]; then
         API_AUTH_MODE=digest
         return 0
@@ -265,10 +310,10 @@ api_authenticate() {
     esac
 
     # Compatibility fallback for a direct connection to the router web API.
-    http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
+    http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 15 \
         -c "$COOKIE_FILE" -b "$COOKIE_FILE" -D "$HEADERS_FILE" -o "$BODY_FILE" \
         -w '%{http_code}' "$ROUTER_URL/auth" 2>/dev/null) || {
-        API_ERROR="адрес управления недоступен"
+        transport_error "$?"
         return 1
     }
     if [ "$http_code" = 200 ]; then
@@ -284,12 +329,12 @@ api_authenticate() {
     fi
     first=$(printf '%s' "$ROUTER_USER:$realm:$ROUTER_PASSWORD" | "$MD5_BIN" | awk '{print $1}') || return 1
     key=$(printf '%s' "$challenge$first" | "$SHA256_BIN" | awk '{print $1}') || return 1
-    http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
+    http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 15 \
         -c "$COOKIE_FILE" -b "$COOKIE_FILE" -D "$HEADERS_FILE" -o "$BODY_FILE" \
         -w '%{http_code}' -H 'Content-Type: application/json' \
         --data "{\"login\":\"$ROUTER_USER\",\"password\":\"$key\"}" \
         "$ROUTER_URL/auth" 2>/dev/null) || {
-        API_ERROR="ошибка отправки авторизации"
+        transport_error "$?"
         return 1
     }
     [ "$http_code" = 200 ] || { API_ERROR="неверный логин или пароль (HTTP $http_code)"; return 1; }
@@ -299,10 +344,10 @@ api_authenticate() {
 api_get_interface() {
     api_authenticate || return 1
     if [ "$API_AUTH_MODE" = session ]; then
-        http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
+        http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 15 \
             -c "$COOKIE_FILE" -b "$COOKIE_FILE" -o "$BODY_FILE" -w '%{http_code}' \
             "$ROUTER_URL/rci/show/interface/$REMOTE_INTERFACE" 2>/dev/null) || {
-            API_ERROR="не удалось прочитать интерфейс"
+            transport_error "$?"
             return 1
         }
         [ "$http_code" = 200 ] || { API_ERROR="проверка интерфейса: HTTP $http_code"; return 1; }
@@ -320,12 +365,12 @@ api_post_interface() {
         http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 20 \
             --config "$DIGEST_CONFIG" -o "$BODY_FILE" -w '%{http_code}' \
             -H 'Content-Type: application/json' --data "$payload" \
-            "$ROUTER_URL/rci/interface/$REMOTE_INTERFACE" 2>/dev/null) || http_code=000
+            "$ROUTER_URL/rci/interface/$REMOTE_INTERFACE" 2>/dev/null) || { transport_error "$?"; return 1; }
     else
-        http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
+        http_code=$("$CURL_BIN" -sS --connect-timeout 5 --max-time 15 \
             -c "$COOKIE_FILE" -b "$COOKIE_FILE" -o "$BODY_FILE" -w '%{http_code}' \
             -H 'Content-Type: application/json' --data "$payload" \
-            "$ROUTER_URL/rci/interface/$REMOTE_INTERFACE" 2>/dev/null) || http_code=000
+            "$ROUTER_URL/rci/interface/$REMOTE_INTERFACE" 2>/dev/null) || { transport_error "$?"; return 1; }
     fi
     if [ "$http_code" = 000 ]; then
         API_ERROR="не удалось отправить команду"
@@ -337,11 +382,12 @@ api_post_interface() {
 
 restart_remote_interface() {
     api_get_interface || return 1
+    NEEDS_UP=yes
     api_post_interface '{"down":true}' || return 1
     "$SLEEP_BIN" "$RESTART_DELAY"
     up_attempt=1
     while [ "$up_attempt" -le 3 ]; do
-        if api_post_interface '{"up":true}'; then return 0; fi
+        if api_post_interface '{"up":true}'; then NEEDS_UP=no; return 0; fi
         up_attempt=$((up_attempt + 1))
         [ "$up_attempt" -le 3 ] && "$SLEEP_BIN" 2
     done
@@ -357,6 +403,7 @@ acquire_lock() {
         LOCK_HELD=yes
         return 0
     fi
+    [ -s "$LOCK_DIR/pid" ] || return 1
     old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
     is_uint "$old_pid" && kill -0 "$old_pid" 2>/dev/null && return 1
     rm -f "$LOCK_DIR/pid"
@@ -378,6 +425,7 @@ process_job() {
     STATE_FILE="$STATE_DIR/$JOB_ID.state"
     load_state
     NOW=$(now_epoch)
+    [ "$LAST_RESTART" -le "$NOW" ] || LAST_RESTART=0
 
     if [ "$FORCE" != yes ]; then
         peer_still_configured || {
@@ -444,7 +492,8 @@ case "${1:-}" in
             [ -f "$file" ] || continue
             name=${file##*/}; name=${name%.conf}
             process_job "$name" || result=1
-            release_lock
+            cleanup
+            NEEDS_UP=no
         done
         exit "$result"
         ;;
