@@ -63,7 +63,11 @@ download() {
     curl -fsSL --connect-timeout 5 --max-time 30 "$1" -o "$2"
 }
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
+if script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd); then
+    :
+else
+    script_dir=''
+fi
 if [ -n "$script_dir" ] && [ -f "$script_dir/keenetic-wg-watchdog.sh" ]; then
     cp "$script_dir/keenetic-wg-watchdog.sh" "$tmp_dir/worker"
     cp "$script_dir/keenetic-wg-watchdog-manager.sh" "$tmp_dir/manager"
@@ -76,7 +80,9 @@ sh -n "$tmp_dir/worker" || die 'ошибка синтаксиса worker'
 sh -n "$tmp_dir/manager" || die 'ошибка синтаксиса manager'
 worker_version=$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$tmp_dir/worker" | sed -n '1p')
 manager_version=$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$tmp_dir/manager" | sed -n '1p')
-[ "$worker_version" = "$VERSION" ] && [ "$manager_version" = "$VERSION" ] || die 'версии файлов не совпадают'
+if [ "$worker_version" != "$VERSION" ] || [ "$manager_version" != "$VERSION" ]; then
+    die 'версии файлов не совпадают'
+fi
 
 install -d -m 700 "$CONFIG_DIR"
 install -m 755 "$tmp_dir/worker" "$BIN_DIR/keenetic-wg-watchdog"

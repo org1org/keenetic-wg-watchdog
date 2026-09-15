@@ -227,10 +227,10 @@ api_authenticate() {
     [ "$http_code" = 401 ] || { API_ERROR="GET /auth: HTTP $http_code"; return 1; }
     realm=$(header_value X-NDM-Realm)
     challenge=$(header_value X-NDM-Challenge)
-    [ -n "$realm" ] && [ -n "$challenge" ] || {
+    if [ -z "$realm" ] || [ -z "$challenge" ]; then
         API_ERROR="нет X-NDM-Realm/X-NDM-Challenge; нужен прямой доступ к RCI"
         return 1
-    }
+    fi
     first=$(printf '%s' "$ROUTER_USER:$realm:$ROUTER_PASSWORD" | "$MD5_BIN" | awk '{print $1}') || return 1
     key=$(printf '%s' "$challenge$first" | "$SHA256_BIN" | awk '{print $1}') || return 1
     http_code=$("$CURL_BIN" -k -sS --connect-timeout 5 --max-time 15 \
