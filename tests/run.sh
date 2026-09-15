@@ -170,12 +170,17 @@ cat > "$MOCK_BIN/install" <<'EOF'
 printf 'устаревшая команда install вызвана\n' >&2
 exit 127
 EOF
+cat > "$MOCK_BIN/id" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = -u ] && { printf '0\n'; exit 0; }
+exit 1
+EOF
 cat > "$INSTALL_ROOT/etc/init.d/S10cron" <<EOF
 #!/bin/sh
 printf '%s\\n' "\$1" >> "$CASE_DIR/cron-init.log"
 EOF
 chmod 755 "$MOCK_BIN/opkg" "$MOCK_BIN/ndmc" "$MOCK_BIN/pidof" \
-    "$MOCK_BIN/install" "$INSTALL_ROOT/etc/init.d/S10cron"
+    "$MOCK_BIN/install" "$MOCK_BIN/id" "$INSTALL_ROOT/etc/init.d/S10cron"
 PATH="$MOCK_BIN:$PATH" KEENETIC_WG_OPT_ROOT="$INSTALL_ROOT" \
     KEENETIC_WG_OPKG="$MOCK_BIN/opkg" KEENETIC_WG_PIDOF="$MOCK_BIN/pidof" \
     $TEST_SHELL "$REPO_DIR/install.sh" > "$CASE_DIR/install-output"
