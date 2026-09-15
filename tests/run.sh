@@ -128,6 +128,30 @@ pass 'удалённое локальное задание безопасно о
 
 new_case
 MOCK_RUNNING_CONFIG='interface Wireguard0
+    description WG-Server
+    wireguard listen-port 36666
+    wireguard peer first-real-format-key= !WG-Bekker
+        allow-ips 172.16.88.7 255.255.255.255
+        allow-ips 192.168.8.0 255.255.255.0
+        connect
+    !
+    wireguard peer second-real-format-key= !WG-Svetlogore
+        allow-ips 172.16.88.6 255.255.255.255
+        connect
+    !
+    up
+!'
+MOCK_RUNNING_CONFIG="$MOCK_RUNNING_CONFIG" KEENETIC_WG_NDMC="$MOCK_BIN/ndmc" \
+    $TEST_SHELL "$MANAGER" --list-peers Wireguard0 > "$CASE_DIR/peers"
+assert_contains "$CASE_DIR/peers" 'first-real-format-key=' 'реальный формат: первый пир'
+assert_contains "$CASE_DIR/peers" '172.16.88.7' 'реальный формат: адрес первого пира'
+assert_contains "$CASE_DIR/peers" 'WG-Bekker' 'реальный формат: имя первого пира'
+assert_contains "$CASE_DIR/peers" 'second-real-format-key=' 'реальный формат: второй пир'
+assert_contains "$CASE_DIR/peers" 'WG-Svetlogore' 'реальный формат: имя второго пира'
+pass 'manager распознаёт реальный формат running-config Keenetic'
+
+new_case
+MOCK_RUNNING_CONFIG='interface Wireguard0
  description "WG-Server"
  wireguard
   peer

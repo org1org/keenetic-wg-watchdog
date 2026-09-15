@@ -162,6 +162,12 @@ detect_peers() {
             current=value
             if (!seen[value]++) order[++peer_count]=value
         }
+        function remember_bang_label(first, value, i) {
+            value=$first
+            sub(/^!/, "", value)
+            for (i=first+1; i<=NF; i++) value=value " " $i
+            label[current]=value
+        }
         function remember_target(value, mask, candidate) {
             if (current == "" || target[current] != "") return
             candidate=value
@@ -172,10 +178,16 @@ detect_peers() {
         function parse_fields(first, i, value) {
             for (i=first; i<=NF; i++) {
                 if ($i=="wireguard" && $(i+1)=="peer") {
-                    remember_peer($(i+2)); i+=2; continue
+                    remember_peer($(i+2))
+                    if ($(i+3) ~ /^!/) { remember_bang_label(i+3); return }
+                    i+=2; continue
                 }
                 if (i==first && $i=="peer") {
-                    if ($(i+1)!="") { remember_peer($(i+1)); i++ }
+                    if ($(i+1)!="") {
+                        remember_peer($(i+1))
+                        if ($(i+2) ~ /^!/) { remember_bang_label(i+2); return }
+                        i++
+                    }
                     else awaiting_key=1
                     continue
                 }
