@@ -2,7 +2,7 @@
 
 # Interactive manager for Keenetic WG Watchdog.
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 OPT_ROOT="${KEENETIC_WG_OPT_ROOT:-/opt}"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-$OPT_ROOT/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"
@@ -113,51 +113,104 @@ job_id_for() {
 detect_interfaces() {
     RUNNING_CONFIG=$("$NDMC_BIN" -c 'show running-config' 2>/dev/null || true)
     INTERFACE_LIST=$(printf '%s\n' "$RUNNING_CONFIG" | awk '
-        function flush() {
-            if (is_wg) {
-                if (description == "") description = "без описания"
-                print name "\t" description
+        function remember(value) {
+            current=value
+            if (!seen[value]++) order[++count]=value
+        }
+        function read_description(first, value, i) {
+            value=$(first+1)
+            for (i=first+2; i<=NF; i++) value=value " " $i
+            gsub(/^"|"$/, "", value)
+            description[current]=value
+        }
+        $1=="interface" {
+            current=""
+            if ($2 ~ /^Wireguard[0-9]+$/) {
+                remember($2)
+                for (i=3; i<=NF; i++) {
+                    if ($i=="description") { read_description(i); break }
+                }
+            }
+            next
+        }
+        current!="" && $1=="description" { read_description(1); next }
+        current!="" && $0=="!" { current=""; next }
+        END {
+            for (i=1; i<=count; i++) {
+                name=order[i]
+                if (description[name]=="") description[name]="без описания"
+                print name "\t" description[name]
             }
         }
-        $1 == "interface" {
-            flush(); name = $2; is_wg = (name ~ /^Wireguard[0-9]+$/); description = ""; next
-        }
-        is_wg && $1 == "description" {
-            sub(/^[[:space:]]*description[[:space:]]+/, ""); description = $0
-            gsub(/^"|"$/, "", description)
-        }
-        END { flush() }
     ')
 }
 
 detect_peers() {
     selected=$1
     PEER_LIST=$(printf '%s\n' "$RUNNING_CONFIG" | awk -v wanted="$selected" '
-        function endpoint_host(value, close, count, parts) {
-            if (substr(value,1,1) == "[") { close=index(value,"]"); if(close>2) return substr(value,2,close-2) }
+        function unquote(value) {
+            gsub(/^"|"$/, "", value)
+            return value
+        }
+        function endpoint_host(value, closing, count, parts) {
+            if (substr(value,1,1) == "[") { closing=index(value,"]"); if(closing>2) return substr(value,2,closing-2) }
             count=split(value,parts,":"); if(count==2) return parts[1]; return value
         }
-        function flush() {
-            if (!in_peer) return
-            if (endpoint == "") endpoint = "-"
-            if (target == "") target = "-"
-            print key "\t" endpoint "\t" target
+        function remember_peer(value) {
+            value=unquote(value)
+            if (value == "") return
+            current=value
+            if (!seen[value]++) order[++peer_count]=value
         }
-        $1 == "interface" {
-            if (inside) { flush(); inside=0; exit }
-            inside=($2==wanted); in_peer=0; next
+        function remember_target(value, mask, candidate) {
+            if (current == "" || target[current] != "") return
+            candidate=value
+            if(candidate ~ /\/32$/) { sub(/\/32$/, "", candidate); if(candidate!="0.0.0.0") target[current]=candidate }
+            else if(candidate ~ /\/128$/) { sub(/\/128$/, "", candidate); if(candidate!="::") target[current]=candidate }
+            else if(mask=="255.255.255.255" && candidate!="0.0.0.0") target[current]=candidate
         }
-        inside && $1=="wireguard" && $2=="peer" {
-            flush(); in_peer=1; key=$3; endpoint=""; target=""; next
+        function parse_fields(first, i, value) {
+            for (i=first; i<=NF; i++) {
+                if ($i=="wireguard" && $(i+1)=="peer") {
+                    remember_peer($(i+2)); i+=2; continue
+                }
+                if (i==first && $i=="peer") {
+                    if ($(i+1)!="") { remember_peer($(i+1)); i++ }
+                    else awaiting_key=1
+                    continue
+                }
+                if (awaiting_key && i==first && $i=="key") {
+                    remember_peer($(i+1)); awaiting_key=0; i++; continue
+                }
+                if (current!="" && $i=="endpoint") {
+                    endpoint[current]=endpoint_host($(i+1)); i++; continue
+                }
+                if (current!="" && $i=="allow-ips") {
+                    remember_target($(i+1), $(i+2)); i+=2; continue
+                }
+                if (current!="" && ($i=="comment" || $i=="description")) {
+                    value=$(i+1)
+                    for (i=i+2; i<=NF; i++) value=value " " $i
+                    label[current]=unquote(value)
+                }
+            }
         }
-        inside && in_peer && $1=="endpoint" { endpoint=endpoint_host($2); next }
-        inside && in_peer && $1=="allow-ips" && target=="" {
-            candidate=$2
-            if(candidate ~ /\/32$/) { sub(/\/32$/, "", candidate); if(candidate!="0.0.0.0") target=candidate }
-            else if(candidate ~ /\/128$/) { sub(/\/128$/, "", candidate); if(candidate!="::") target=candidate }
-            else if($3=="255.255.255.255" && candidate!="0.0.0.0") target=candidate
+        $1=="interface" {
+            inside=($2==wanted); current=""; awaiting_key=0
+            if (inside) parse_fields(3)
+            next
         }
-        END { if(inside) flush() }
+        inside && $0=="!" { inside=0; current=""; awaiting_key=0; next }
+        inside { parse_fields(1) }
+        END {
+            for (i=1; i<=peer_count; i++) {
+                key=order[i]
+                if (endpoint[key]=="") endpoint[key]="-"
+                if (target[key]=="") target[key]="-"
+                if (label[key]=="") label[key]="-"
+                print key "\t" endpoint[key] "\t" target[key] "\t" label[key]
+            }
+        }
     ')
 }
 
@@ -191,14 +244,15 @@ choose_peer() {
         count=$(printf '%s\n' "$PEER_LIST" | awk 'NF{n++} END{print n+0}')
         [ "$count" -gt 0 ] || { say 'На интерфейсе нет пиров.'; pause; return 1; }
         index=1
-        while IFS="$(printf '\t')" read -r key endpoint target; do
+        while IFS="$(printf '\t')" read -r key endpoint target peer_label; do
             short=$(printf '%.8s' "$key")
             [ "$endpoint" = - ] && endpoint='endpoint не найден'
             [ "$target" = - ] && target='адрес не найден'
+            [ "$peer_label" = - ] && peer_label="peer $short…"
             job_id_for "$SELECTED_INTERFACE" "$key"
             marker=''
             [ -f "$CONFIG_DIR/$REPLY.conf" ] && marker=' · настроен'
-            say "  $index. peer $short… — $endpoint; $target$marker"
+            say "  $index. $peer_label — $endpoint; $target$marker"
             index=$((index + 1))
         done <<EOF
 $PEER_LIST
@@ -403,8 +457,19 @@ main() {
     done
 }
 
+list_peers() {
+    [ "$#" -eq 1 ] && valid_interface "$1" || {
+        printf 'Использование: %s --list-peers WireguardN\n' "$0" >&2
+        return 2
+    }
+    detect_interfaces
+    detect_peers "$1"
+    printf '%s\n' "$PEER_LIST" | awk 'NF'
+}
+
 case "${1:-}" in
     --version) printf '%s\n' "$VERSION" ;;
+    --list-peers) shift; list_peers "$@" ;;
     ''|--plain) main ;;
-    *) printf 'Использование: %s [--plain|--version]\n' "$0" >&2; exit 2 ;;
+    *) printf 'Использование: %s [--plain|--version|--list-peers WireguardN]\n' "$0" >&2; exit 2 ;;
 esac

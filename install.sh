@@ -2,7 +2,7 @@
 
 set -eu
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 BASE_URL="${KEENETIC_WG_BASE_URL:-https://raw.githubusercontent.com/org1org/keenetic-wg-watchdog/main}"
 OPT_ROOT="${KEENETIC_WG_OPT_ROOT:-/opt}"
 BIN_DIR="$OPT_ROOT/bin"

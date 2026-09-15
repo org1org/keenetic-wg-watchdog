@@ -12,7 +12,7 @@ __        __    ____    __  __
 
 Удалённое восстановление WireGuard между роутерами Keenetic.
 
-![version](https://img.shields.io/badge/version-0.2.1-blue)
+![version](https://img.shields.io/badge/version-0.2.2-blue)
 ![shell](https://img.shields.io/badge/shell-POSIX%20sh-4EAA25)
 ![platform](https://img.shields.io/badge/platform-KeeneticOS-009EE2)
 ![environment](https://img.shields.io/badge/environment-Entware-555555)
@@ -48,6 +48,8 @@ WireGuard-подключения. Удалённому Keenetic/Netcraze Entware
 - облачная Digest-авторизация KeenDNS/CrazeDNS как основной режим;
 - автоматический fallback на прямую RCI-авторизацию;
 - последовательный выбор локального WG-сервера и его пира;
+- поддержка блочного и вложенного формата конфигурации WireGuard в разных
+  версиях KeeneticOS/NetcrazeOS;
 - определение адреса контроля из `allow-ips /32` или `/128`;
 - проверка авторизации и наличия удалённого интерфейса при настройке;
 - две ошибки до перезапуска, контроль восстановления и cooldown 30 минут;

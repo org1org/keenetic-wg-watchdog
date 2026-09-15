@@ -5,6 +5,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 WORKER="$REPO_DIR/keenetic-wg-watchdog.sh"
+MANAGER="$REPO_DIR/keenetic-wg-watchdog-manager.sh"
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/keenetic-wg-tests.XXXXXX")
 PASS_COUNT=0
 TEST_SHELL=${TEST_SHELL:-dash}
@@ -124,6 +125,54 @@ MOCK_RUNNING_CONFIG='interface Wireguard0
 assert_contains "$STATE_DIR/Wireguard0-test.state" 'LAST_RESULT=peer_missing' 'удалённый пир в локальной конфигурации отсутствует'
 assert_empty "$MOCK_DIR/curl.log" 'удалённый локально пир не должен запускать API'
 pass 'удалённое локальное задание безопасно останавливается'
+
+new_case
+MOCK_RUNNING_CONFIG='interface Wireguard0
+ description "WG-Server"
+ wireguard
+  peer
+   key peer-one-public-key
+   comment "WG-Bekker"
+   allow-ips 172.16.6.2 255.255.255.255
+  !
+  peer peer-two-public-key
+   comment "WG-Work"
+   allow-ips 172.16.6.3/32
+  !
+ !
+!'
+MOCK_RUNNING_CONFIG="$MOCK_RUNNING_CONFIG" KEENETIC_WG_NDMC="$MOCK_BIN/ndmc" \
+    $TEST_SHELL "$MANAGER" --list-peers Wireguard0 > "$CASE_DIR/peers"
+assert_contains "$CASE_DIR/peers" 'peer-one-public-key' 'вложенный формат: первый пир'
+assert_contains "$CASE_DIR/peers" '172.16.6.2' 'вложенный формат: адрес первого пира'
+assert_contains "$CASE_DIR/peers" 'WG-Bekker' 'вложенный формат: имя первого пира'
+assert_contains "$CASE_DIR/peers" 'peer-two-public-key' 'вложенный формат: второй пир'
+assert_contains "$CASE_DIR/peers" '172.16.6.3' 'вложенный формат: CIDR второго пира'
+pass 'manager распознаёт вложенный формат пиров актуальной KeeneticOS'
+
+new_case
+MOCK_RUNNING_CONFIG='interface Wireguard0 wireguard peer flat-peer-public-key allow-ips 172.16.6.4/32
+interface Wireguard0 wireguard peer flat-peer-public-key comment "WG-Flat"'
+MOCK_RUNNING_CONFIG="$MOCK_RUNNING_CONFIG" KEENETIC_WG_NDMC="$MOCK_BIN/ndmc" \
+    $TEST_SHELL "$MANAGER" --list-peers Wireguard0 > "$CASE_DIR/peers"
+assert_contains "$CASE_DIR/peers" 'flat-peer-public-key' 'однострочный формат: пир'
+assert_contains "$CASE_DIR/peers" '172.16.6.4' 'однострочный формат: адрес'
+assert_contains "$CASE_DIR/peers" 'WG-Flat' 'однострочный формат: имя'
+[ "$(wc -l < "$CASE_DIR/peers" | tr -d " ")" = 1 ] || fail 'однострочный пир продублирован'
+pass 'manager объединяет однострочные команды одного пира'
+
+new_case
+write_config
+MOCK_RUNNING_CONFIG='interface Wireguard0
+ wireguard
+  peer
+   key test-peer-public-key
+   allow-ips 172.16.6.2/32
+  !
+ !
+!' run_worker healthy 5500 --job Wireguard0-test --check >/dev/null
+assert_contains "$STATE_DIR/Wireguard0-test.state" 'LAST_RESULT=healthy' 'проверка вложенного пира worker'
+pass 'worker подтверждает наличие пира во вложенном формате'
 
 new_case
 write_config

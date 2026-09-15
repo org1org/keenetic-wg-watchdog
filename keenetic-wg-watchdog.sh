@@ -2,7 +2,7 @@
 
 # Server-side peer watchdog for KeeneticOS + Entware.
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 CONFIG_DIR="${KEENETIC_WG_CONFIG_DIR:-/opt/etc/keenetic-wg-watchdog.d}"
 STATE_DIR="${KEENETIC_WG_STATE_DIR:-/tmp/keenetic-wg-watchdog}"
 RUN_DIR="${KEENETIC_WG_RUN_DIR:-/tmp/keenetic-wg-watchdog}"
@@ -177,8 +177,21 @@ now_epoch() {
 peer_still_configured() {
     "$NDMC_BIN" -c "show running-config" 2>/dev/null | awk \
         -v wanted_interface="$LOCAL_INTERFACE" -v wanted_key="$PEER_PUBLIC_KEY" '
-        $1 == "interface" { inside = ($2 == wanted_interface); next }
-        inside && $1 == "wireguard" && $2 == "peer" && $3 == wanted_key { found = 1 }
+        function scan(first, i) {
+            for (i=first; i<=NF; i++) {
+                if ($i=="wireguard" && $(i+1)=="peer" && $(i+2)==wanted_key) found=1
+            }
+        }
+        $1 == "interface" {
+            inside=($2==wanted_interface); in_peer=0
+            if (inside) scan(3)
+            next
+        }
+        inside && $0=="!" { inside=0; in_peer=0; next }
+        inside && $1=="wireguard" && $2=="peer" && $3==wanted_key { found=1 }
+        inside && $1=="peer" && $2==wanted_key { found=1 }
+        inside && $1=="peer" && NF==1 { in_peer=1; next }
+        inside && in_peer && $1=="key" && $2==wanted_key { found=1 }
         END { exit(found ? 0 : 1) }
     '
 }
